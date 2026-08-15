@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Predicting Content Decline for Refresh Prioritization</title>
+<style>
+  body {
+    font-family: Georgia, serif;
+    max-width: 780px;
+    margin: 40px auto;
+    padding: 0 20px;
+    line-height: 1.6;
+    color: #222;
+  }
+  h1 { font-size: 1.8em; margin-bottom: 0.2em; }
+  h2 { margin-top: 2em; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .subtitle { color: #666; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
+  th { background: #f5f5f5; }
+  img { max-width: 100%; border: 1px solid #ddd; margin: 1em 0; }
+  .note { background: #f9f9f4; padding: 12px 16px; border-left: 3px solid #c9a227; margin: 1em 0; }
+  code { background: #f2f2f2; padding: 2px 5px; border-radius: 3px; }
+  footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; color: #555; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Predicting Content Decline for Refresh Prioritization</h1>
+<p class="subtitle">A FlyRank Search Intelligence capstone project</p>
+
+<h2>Abstract</h2>
+<p>
+This project tries to answer a simple question, can I predict which pages are about
+to lose search visibility using only data that was already closed by the time I'm
+predicting. I used real search performance data from February and March 2026, first
+built a simple rule based baseline, then trained a logistic regression model on top
+of it to see if it could do better. The model ended up catching a lot more of the
+actual declining pages than the baseline did, 73 percent versus less than 1 percent,
+but it also flagged more false alarms along the way, so it's a tradeoff, not a clean
+win. I ran into a leakage problem early on, one of my features was basically giving
+away the answer, so I had to catch that and remove it before trusting any of my
+numbers. What I ended up with isn't a perfect predictor, but it's still a better
+starting point than nothing for figuring out which pages a content team should check
+first.
+</p>
+
+<h2>Introduction / Problem Statement</h2>
+<p>
+A content team can't sit down and manually check every single page every month to see
+if it's losing search visibility, there's just too many pages. This project is meant
+to support one decision: out of a big inventory of pages, which ones should get
+reviewed for a refresh first, so the limited time the team has actually goes toward
+the pages that need it.
+</p>
+<p>
+Getting this wrong isn't free either way. If I flag a page that turns out to be fine,
+that's just a few wasted minutes of review. But if I miss a page that's actually
+declining, it just keeps losing traffic quietly and nobody catches it.
+</p>
+
+<h2>Data</h2>
+<p>
+Data comes from the FlyRank ML Internship warehouse release on Hugging Face, tables
+<code>dim_content</code> and <code>fact_content_daily_performance</code> (month
+partitions <code>2026-02</code> and <code>2026-03</code>).
+</p>
+<p>
+February 2026 is used as the closed month for features. March 2026 is the month
+being predicted. One row is one page's performance for one client, summed over the
+full month.
+</p>
+<p>
+Columns used: <code>gsc_impressions</code>, <code>gsc_clicks</code>,
+<code>gsc_avg_position</code>, <code>content_created_date</code>,
+<code>content_updated_date</code>, <code>word_count</code>, <code>content_type</code>.
+</p>
+<p>
+Pages with fewer than 50 February impressions were dropped, leaving 89,086 pages out
+of 321,546. Very small or brand new pages do not have enough signal to score
+reliably. No client names, domains, URLs, or credentials appear anywhere. All IDs are
+hashed.
+</p>
+
+<h2>Methodology</h2>
+<p>
+<strong>Baseline:</strong> a simple rule using two flags. <code>STALE</code> if the
+page has not been updated in over 90 days. <code>CTR_GAP</code> if the page ranks in
+the top 20 positions but still has a low click through rate. Pages get a score, and
+the score decides if a page is <code>priority_review</code>, <code>monitor</code>, or
+<code>no_action</code>.
+</p>
+<p>
+<strong>Label:</strong> <code>is_declining</code>, meaning March impressions dropped
+more than 20 percent below February impressions. This is only used as the prediction
+target, never as an input feature.
+</p>
+<p>
+<strong>Features used:</strong> <code>feb_impressions</code>, <code>feb_clicks</code>,
+<code>feb_avg_position</code>, <code>content_age_days</code>. All of these are known
+and closed before March starts.
+</p>
+<div class="note">
+<strong>Leakage check:</strong> I tested a trend feature that was built straight from
+March's own numbers, and it pushed the AUC from 0.56 all the way up to a perfect
+1.00. A model doesn't get that good by accident, that's a leak. I pulled that feature
+out and kept the honest 0.56 as my real result.
+</div>
+<p>
+<strong>Validation design:</strong> a stratified train and test split, 75 percent
+train and 25 percent test, keeping the same ratio of declining to non-declining
+pages in both sets.
+</p>
+<p>
+<strong>Model:</strong> Logistic Regression, with balanced class weighting, since
+declining pages are a minority of the data (about 19 percent) and an unbalanced model
+just predicts "not declining" for almost everyone.
+</p>
+
+<h2>Results (vs Baseline)</h2>
+<table>
+<tr><th>Method</th><th>Precision</th><th>Recall</th><th>F1</th><th>ROC AUC</th></tr>
+<tr><td>Baseline (rule-based)</td><td>0.393</td><td>0.003</td><td>0.005</td><td>&mdash;</td></tr>
+<tr><td>Model (Logistic Regression)</td><td>0.211</td><td>0.733</td><td>0.328</td><td>0.561</td></tr>
+</table>
+<p>
+The baseline is pretty precise on the few pages it does flag, but it barely catches
+anything, only 0.3 percent of the actual declining pages. The model does the opposite
+tradeoff, it catches 73 percent of real declines but flags more false alarms along
+the way. For what this is actually used for, I think that tradeoff is fine, since a
+content editor can quickly skim through and skip the false alarms, but a decline that
+never gets flagged at all just goes unnoticed forever.
+</p>
+<img src="model_vs_baseline.png" alt="Bar chart comparing model and baseline precision, recall, and F1">
+
+<h2>Limitations</h2>
+<ul>
+<li>This is decision support, not proof. Just because the model flags a page doesn't
+mean refreshing it will actually fix anything, it's only saying a decline already
+happened or looks likely, based on the patterns it found.</li>
+<li>I only compared Feb to March, so this is really just one snapshot in time, not
+something I've tested across multiple months yet.</li>
+<li>Recall looks good at 0.733 but precision is only 0.211, so honestly the model
+flags a lot of pages that end up being fine. I'd treat this as a way to shortlist
+pages for a human to look at, not as a final verdict on its own.</li>
+<li>Anything under 50 February impressions got dropped from the dataset, so small or
+newly published pages just aren't represented here at all.</li>
+<li>GA4 stuff like AI referral sessions was missing for most rows, not because those
+pages had zero AI traffic, but because tracking just wasn't set up for them, so the
+model mostly leans on GSC numbers instead.</li>
+</ul>
+
+<h2>Ranked Recommendations</h2>
+<p>
+I ranked pages by the model's predicted decline probability, from highest to lowest,
+and split them into three buckets so it's actually usable for a real team.
+</p>
+<ul>
+<li><strong>priority_refresh</strong> — probability above 0.66, these should get looked at first</li>
+<li><strong>review</strong> — probability between 0.33 and 0.66, worth a quick manual check</li>
+<li><strong>monitor</strong> — probability below 0.33, probably fine for now</li>
+</ul>
+<p>
+I also kept the old baseline flag (STALE / CTR_GAP) sitting right next to the model's
+score in the same table, since I figured it's more useful for an editor to see both
+signals at once instead of just trusting the model blindly.
+</p>
+<img src="score_distribution.png" alt="Histogram of predicted decline probability across test set pages">
+
+<h2>Reproducibility</h2>
+<p>
+Full notebook and code: <a href="../work/notebooks/">work/notebooks/</a> in this repo.
+</p>
+<p>
+Repo root: <a href="../">view repository</a>
+</p>
+
+<footer>
+<h2>Acknowledgments &amp; Data Credit</h2>
+<p>
+Built on the FlyRank ML Internship dataset —
+<a href="https://flyrank.ai" target="_blank" rel="noopener">https://flyrank.ai</a>
+</p>
+</footer>
+
+</body>
+</html>
